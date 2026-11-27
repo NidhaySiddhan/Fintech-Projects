@@ -7,3 +7,8 @@ playwright-report/
 test-results/
 
 tests/.ui-app.cjs
+
+data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

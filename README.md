@@ -1,78 +1,117 @@
 # Paisa — Personal Expense Tracker
 
-A local-first personal expense tracker and budgeting app built with React, TypeScript, and Vite. Phase 1 is designed for one person recording transactions manually in Indian Rupees.
+A single-user expense tracker built with **React, TypeScript, Node.js and SQLite**. Phase 2 adds a relational database and an HTTP API to the existing dashboard, transactions, categories, monthly budgets and settings pages.
 
 ## Run locally
 
-Use **Node.js 24.15+ on the Node 24 LTS line** (or Node 22.22.2+) and npm.
+Use Node.js **24.15+ on the Node 24 line** (or Node 22.22.2+) and npm. No separate database installation, account, API key or paid service is required. Node's built-in SQLite module stores your database in `data/paisa.sqlite`.
 
-```bash
+```sh
 npm ci
+npm run build
+npm start
+```
+
+Open **http://127.0.0.1:3001**. The Node server serves both the production frontend and API. Keep it running while using the app. Stop it with Ctrl+C; records remain on disk.
+
+For development, use two terminals:
+
+```sh
+# Terminal 1: database and API
+npm run server
+```
+
+```sh
+# Terminal 2: frontend with hot reload
 npm run dev
 ```
 
-Open the local URL printed by Vite. To test and build:
+Open **http://127.0.0.1:5173**. Vite forwards `/api` to port 3001. Port 5173 is fixed to keep the permitted development origin explicit. `PORT` changes the production API port; the development proxy remains at 3001. `PAISA_DB` can select a different database path.
 
-```bash
-npm test
-npm run build
-npm run preview
-```
+**This version requires its Node backend.** Deploying only `dist/` to GitHub Pages or another static host will not run the database API. The server binds to loopback only. It has no login or multi-user isolation and is not intended to be exposed publicly or on a LAN.
 
-The production build is generated in `dist/`. Serve this folder with a static web server; don't open `index.html` directly as a file. If hosting under a repository subpath such as `/Fintech-Projects/`, run `npm run build -- --base=/Fintech-Projects/`. No environment variables, paid services, database installation, or API keys are required.
+## Features
 
-## Phase 1 features
+- Dashboard: selected-month income/expenses, all-time tracked balance, remaining budget, recent transactions and spending by category.
+- Transactions: create, edit, delete with confirmation, search/filter, and export filtered CSV.
+- Categories: add, rename, choose colours and remove unused categories; referenced categories are protected.
+- Budgets: category limits for each month, editable limits and overspending indicators.
+- Settings: profile editing, JSON backup/restore and confirmed workspace reset.
+- Demo mode: isolated in-memory sample records; demo changes never enter the database.
+- Database persistence: records survive browser storage clearing and server restart.
+- Conflict protection: stale tabs cannot overwrite newer database records. Use **Reload saved data**, review the latest records and retry your edit.
+- Failed saves show an error and do not report success or navigate away from the transaction form.
 
-- **Dashboard:** selected-month income and expenses, all-time net balance, remaining monthly budget, recent transactions, expense-category breakdown, and budget progress.
-- **Transactions:** add, edit, delete with confirmation, search descriptions/notes/categories, filter by month/type/category, and download the filtered results as CSV.
-- **Categories:** add, rename, choose a colour, and delete unused income/expense categories. Renaming preserves record associations. Deletion is blocked while a category is referenced by any transaction or budget.
-- **Budgets:** set, edit, and remove category limits for individual months. Shows both remaining amounts and overspending alerts. Category budgets sum to the monthly spending plan.
-- **Settings:** edit display name and optional email, export JSON backups, validate and restore backups with replacement confirmation, and reset the workspace with confirmation.
-- **Demo mode:** clearly labelled example records in a separate in-memory workspace. Entering/exiting demo mode never replaces personal records. Demo edits are discarded when leaving or reloading.
-- Responsive desktop sidebar and mobile navigation, keyboard-focus indicators, labelled forms, accessible confirmation dialogs and status/error messages.
+## Bring over Phase 1 browser data
 
-## Data and calculation rules
+In **Settings**, choose **Import earlier browser records** and confirm replacement. The old browser copy is retained. Import is explicit because it replaces the current database workspace; export the database's JSON backup first if it contains records you want to keep.
 
-Amounts are stored as **integer paise** to avoid decimal rounding errors. Inputs must be positive, have at most two decimal places, and be at most ₹10 crore. A transaction is either income or expense; the selected category must have the same type. Future-dated transactions aren't supported in Phase 1.
+Browser storage belongs to a specific origin. If you used another address, port, browser or device for Phase 1, export a JSON backup from that original app and restore it here instead. **Download original browser backup** also preserves raw unreadable browser content for recovery. Invalid imports never replace existing database records.
 
-- **Income / expenses:** only transactions in the selected calendar month.
-- **Net balance:** all recorded income minus all recorded expenses up to today. This is a tracked balance, not a connected bank balance.
-- **Remaining monthly budget:** sum of that month's category budgets minus *all* that month's expenses, including expenses in unbudgeted categories. With no budgets it shows “Not set”.
-- **Category budget:** category spending is matched by stable category ID and calendar month. Unused budgets don't roll over.
-- **Dates:** local calendar dates, displayed without UTC shifting.
-
-Data is stored under `paisa-personal-v1` in this browser's `localStorage`. There is **no server, authentication, cloud sync, bank connection, encryption at rest, or shared account**. The optional email stays on this device. Changing browser, device, or site origin creates a separate workspace. Clearing browser storage deletes saved records. Export JSON backups regularly and keep them private.
-
-Corrupt or incompatible saved data is not overwritten automatically. Settings offers a download of the original stored content before resetting. Imports validate schema version, dates, amounts, duplicate IDs/category names/budgets, and category references before any replacement. CSV output escapes quotes and neutralises formula-leading text.
-
-## Project structure
+## Architecture and database design
 
 ```text
-src/
-  App.tsx          Page layout, forms, shared state and persistence
-  components.tsx   Reusable UI and transaction form
-  model.ts         Data types, validation, money calculations, demo and CSV
-  main.tsx         React entry point
-  style.css        Responsive design and component styles
-tests/
-  model.test.ts    Calculation, validation and data integrity tests
-  ui.test.mjs      DOM integration test exercising the complete data workflow
+React UI → /api/workspace → shared validation → SQLite transaction → saved response
 ```
 
-The runtime dependencies are React and React DOM. Vite/TypeScript build the app; Node's test runner, jsdom, and esbuild run the tests. No UI framework, chart library, backend, analytics, remote fonts, or external network calls are used by the app.
+| Table | Purpose and key |
+| --- | --- |
+| `workspace` | Singleton profile and revision number; primary key `id=1` |
+| `categories` | Stable category IDs, names, type and colour |
+| `transactions` | Income/expense records; composite foreign key ensures category/type match |
+| `budgets` | One limit per `(month, categoryId)`; foreign key to categories |
 
-## Verification
+Amounts are positive **integer paise**, with a per-record maximum of ₹10 crore. SQL uses bound parameters, strict tables, amount constraints and enabled foreign keys. Date and category/date indexes are included for future filtered queries. Schema version 1 is recorded with `PRAGMA user_version`; newer unsupported database versions are rejected.
 
-`npm test` runs eight model tests and one integration suite covering transaction CRUD, cross-page totals, remount persistence, budget editing/overspending, referenced-category protection, category renaming, profile editing, demo isolation, delete/reset confirmation, invalid amount handling, and corrupted storage preservation. Model tests also cover backup round trips and CSV escaping.
+- `GET /api/workspace` returns `{revision, data}`.
+- `PUT /api/workspace` accepts `{revision, data}` with JSON content type.
+- The server validates the complete workspace, acquires a write transaction, compares the revision, replaces the related rows and increments the revision in one atomic commit.
+- Invalid bodies return 400; stale revisions return 409; non-JSON writes return 415; payloads over 10 MB return 413. Unknown API routes return 404.
+- A failed SQL write rolls back the whole replacement. The UI applies saved state only after a successful response.
 
-`npm run build` performs strict TypeScript checking and creates the production bundle.
+This snapshot API deliberately keeps the first database upgrade simple. It rewrites the workspace on each save and loads all records into the UI; it is suited to small personal datasets, not high-volume or multi-user workloads. Pagination, per-record endpoints and incremental writes are future work.
 
-Visual and full real-browser testing remain a manual release check: the implementation environment could not launch its command-line browser or connect its separate browser to the local preview server. The DOM tests are not a substitute for checking mobile layout in a real browser. See `TESTING.md` for the exact checklist.
+## Calculation rules
 
-## Scope and future work
+- Income and expenses include only the selected calendar month.
+- Net balance is all recorded income minus expenses through today; it is not a connected bank balance.
+- Remaining budget is the sum of that month's category budgets minus **all** its expenses, including unbudgeted categories. Without limits it displays “Not set”.
+- Category budgets use stable IDs, do not roll over and only apply to expense categories.
+- Future-dated transactions are rejected. Dates are local calendar dates.
+- CSV text is quoted and formula-leading text is neutralised.
 
-Phase 1 is a working local personal tracker, not a banking product. Recurring transactions, multi-currency conversion, bank imports, authentication, encryption, and cloud sync are outside this release. Very large datasets are not optimised; use this version for personal-scale records and keep backups.
+## Privacy and backups
 
-## Development transparency
+The database contains personal financial records and is not encrypted at rest. `data/` and SQLite files are ignored by Git. Do not upload actual records to GitHub. Clearing browser storage does not erase the database, but deleting the database file does.
 
-Implemented with AI coding assistance. Before presenting this in a resume or interview, run the app yourself and understand the data model, integer-paise calculations, shared React state, persistence, validation, and tests. Describe your own contribution accurately.
+Use **Download JSON backup** in Settings for a portable backup. Keep it private. To copy the SQLite file directly, stop the server first so you do not copy an inconsistent live database without its WAL files. Restore through Settings validates data and asks before replacement. This app has no bank connection, cloud sync or account authentication.
+
+## Tests and project structure
+
+```sh
+npm test
+npm run build
+```
+
+`npm test` runs model tests, real SQLite tests, HTTP API tests and a React DOM integration suite backed by SQLite. It covers calculations, persistence after reopen, SQL rollback after an injected failure, stale writes, invalid imports, origin checks, transaction/budget workflows, failed-save retry and demo isolation. The DOM suite mocks the fetch transport; separate HTTP tests exercise real requests.
+
+```text
+server/database.mjs  Schema, prepared statements, atomic saves and revisions
+server/app.mjs       HTTP API, input limits, local access checks and static serving
+server/index.mjs     Loopback startup and shutdown
+src/api.ts           Typed frontend API client
+src/model.ts         Shared validation, integer-paise calculations and exports
+src/App.tsx          Pages, forms, asynchronous saves and migration controls
+src/components.tsx   Reusable controls and transaction form
+src/style.css        Responsive styles
+vite.config.ts       Development API proxy
+tests/              Model, database, HTTP and DOM integration tests
+```
+
+Full browser visual testing and real-user acceptance remain manual checks; see [TESTING.md](TESTING.md). Automated tests do not establish production security or performance at scale.
+
+## What to understand for interviews
+
+Explain primary/foreign keys, integer money representation, prepared statements, transaction rollback, HTTP status codes and optimistic concurrency. Trace an expense from the form to the database and back. Explain why a stale tab gets a conflict and why a failed import leaves saved data intact.
+
+Implemented with AI coding assistance. Describe your own design, testing and learning contributions accurately. Authentication, recurring transactions, bank imports, encryption and public deployment remain outside this release.

@@ -1,3 +1,4 @@
+import { workspace } from "./api";
 import { Icon, Empty, Progress, TransactionForm } from "./components";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
@@ -26,18 +27,6 @@ const pages = [
   "Settings",
 ] as const;
 type Page = (typeof pages)[number];
-function readInitial() {
-  try {
-    const raw = localStorage.getItem(KEY);
-    return { data: raw ? validateData(JSON.parse(raw)) : fresh(), error: "" };
-  } catch {
-    return {
-      data: fresh(),
-      error:
-        "Saved data could not be read. Your stored copy has not been overwritten. Download it in Settings before resetting.",
-    };
-  }
-}
 function download(name: string, text: string, type: string) {
   const url = URL.createObjectURL(new Blob([text], { type }));
   const a = document.createElement("a");
@@ -47,10 +36,13 @@ function download(name: string, text: string, type: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 export default function App() {
-  const [initial] = useState(readInitial),
-    [personal, setPersonal] = useState(initial.data),
+  const [personal, setPersonal] = useState(fresh),
     [demoData, setDemoData] = useState<Data | null>(null),
-    [storageError, setStorageError] = useState(initial.error);
+    [storageError, setStorageError] = useState("");
+  const [loading,setLoading]=useState(true);
+  const [saving,setSaving]=useState(false);
+  const revision=useRef(0);
+  const busy=useRef(false);
   const data = demoData || personal;
   const [page, setPage] = useState<Page>("Dashboard"),
     [month, setMonth] = useState(today().slice(0, 7)),
@@ -65,7 +57,7 @@ export default function App() {
     [confirmAction, setConfirmAction] = useState<{
       title: string;
       description: string;
-      run: () => void;
+      run: () => unknown;
     } | null>(null);
   const dialog = useRef<HTMLDialogElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
@@ -74,17 +66,13 @@ export default function App() {
     sorted = [...stats.tx]
       .reverse()
       .sort((a, b) => b.date.localeCompare(a.date));
-  useEffect(() => {
-    const sync = (event: StorageEvent) => {
-      if (event.key === KEY || event.key === null) {
-        const next = readInitial();
-        setPersonal(next.data);
-        setStorageError(next.error);
-      }
-    };
-    window.addEventListener("storage", sync);
-    return () => window.removeEventListener("storage", sync);
-  }, []);
+  async function reloadSaved() {
+    setLoading(true);
+    try { const result=await workspace(); setPersonal(result.data); revision.current=result.revision; setStorageError(""); setError(""); }
+    catch { setStorageError("Could not load saved data. Start the local server and retry. Existing records have not been changed."); }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { void reloadSaved(); }, []);
   useEffect(() => {
     if (notice) {
       const id = setTimeout(() => setNotice(""), 4500);
@@ -95,7 +83,9 @@ export default function App() {
     if (confirmAction) dialog.current?.showModal();
     else dialog.current?.close();
   }, [confirmAction]);
-  function commit(next: Data, message = "Saved successfully.") {
+  async function commit(next: Data, message = "Saved successfully.") {
+    if (busy.current) return false;
+    busy.current=true; setSaving(true);
     try {
       validateData(next);
       if (demoData) {
@@ -103,8 +93,9 @@ export default function App() {
       } else {
         if (storageError)
           throw Error("Resolve the storage issue in Settings before saving.");
-        localStorage.setItem(KEY, JSON.stringify(next));
-        setPersonal(next);
+        const result=await workspace(next,revision.current);
+        revision.current=result.revision;
+        setPersonal(result.data);
       }
       setError("");
       setNotice(message);
@@ -112,10 +103,10 @@ export default function App() {
     } catch (e) {
       setError(
         (e as Error).message ||
-          "Unable to save. Export a backup and check browser storage.",
+          "Unable to save. Check that the local server is running, then retry.",
       );
       return false;
-    }
+    } finally { busy.current=false; setSaving(false); }
   }
   function navigate(next: Page) {
     if (next === "Transactions") {
@@ -131,7 +122,7 @@ export default function App() {
     window.scrollTo(0, 0);
     setTimeout(() => titleRef.current?.focus(), 0);
   }
-  function ask(title: string, description: string, run: () => void) {
+  function ask(title: string, description: string, run: () => unknown) {
     setConfirmAction({ title, description, run });
   }
   function startDemo() {
@@ -258,9 +249,10 @@ export default function App() {
       </div>
     );
   }
-  function saveTransaction(e: FormEvent<HTMLFormElement>) {
+  async function saveTransaction(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const f = new FormData(e.currentTarget);
+    const form=e.currentTarget;
+    const f = new FormData(form);
     try {
       const kind = f.get("kind") as Kind,
         categoryId = String(f.get("categoryId")),
@@ -278,7 +270,7 @@ export default function App() {
       if (date > today())
         throw Error("Future transactions are not supported in Phase 1.");
       if (
-        commit(
+        await commit(
           {
             ...data,
             transactions: edit
@@ -295,9 +287,10 @@ export default function App() {
       setError((e as Error).message);
     }
   }
-  function saveCategory(e: FormEvent<HTMLFormElement>) {
+  async function saveCategory(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const f = new FormData(e.currentTarget);
+    const form=e.currentTarget;
+    const f = new FormData(form);
     const name = String(f.get("name")).trim(),
       kind = f.get("kind") as Kind,
       color = String(f.get("color"));
@@ -323,7 +316,7 @@ export default function App() {
       color,
     };
     if (
-      commit(
+      await commit(
         {
           ...data,
           categories: editingCategory
@@ -334,12 +327,13 @@ export default function App() {
       )
     ) {
       setEditingCategory(null);
-      e.currentTarget.reset();
+      form.reset();
     }
   }
-  function saveBudget(e: FormEvent<HTMLFormElement>) {
+  async function saveBudget(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const f = new FormData(e.currentTarget);
+    const form=e.currentTarget;
+    const f = new FormData(form);
     try {
       const categoryId = String(f.get("categoryId")),
         amount = parseAmount(String(f.get("amount")));
@@ -353,7 +347,7 @@ export default function App() {
           "This category already has a budget. Use Edit to change it.",
         );
       if (
-        commit(
+        await commit(
           {
             ...data,
             budgets: [
@@ -367,7 +361,7 @@ export default function App() {
         )
       ) {
         setEditingBudget(null);
-        e.currentTarget.reset();
+        form.reset();
       }
     } catch (e) {
       setError((e as Error).message);
@@ -390,7 +384,9 @@ export default function App() {
     Budgets: "Give your spending a little direction.",
     Settings: "Your profile, your data, your preferences.",
   };
+  if (loading || storageError) return <main className="panel"><h1>Paisa</h1><p role={storageError ? "alert" : "status"}>{storageError || "Loading saved records…"}</p>{storageError && <button onClick={() => void reloadSaved()}>Retry connection</button>}</main>;
   return (
+    <fieldset disabled={saving} style={{border:0,padding:0,margin:0,minWidth:0}}>
     <div className="app">
       <aside className="sidebar">
         <a
@@ -422,7 +418,7 @@ export default function App() {
         <div className="sidebar-bottom">
           <div className="privacy">
             <span className="privacy-dot" /> A little more peace of mind.
-            <small>Your data stays in this browser.</small>
+            <small>Your records stay on your computer.</small>
           </div>
           <button
             className="profile-button"
@@ -448,7 +444,7 @@ export default function App() {
             <span className="top-page">{page}</span>
           </span>
           <span className="local-pill">
-            <span /> {demoData ? "Demo workspace" : "Saved on this device"}
+            <span /> {demoData ? "Demo workspace" : "Saved in local database"}
           </span>
         </header>
         <main>
@@ -524,6 +520,9 @@ export default function App() {
               </button>
             </div>
           )}
+          {(storageError || error) && <button className="secondary" onClick={() => void reloadSaved()}>Reload saved data</button>}
+          {loading && <p role="status">Loading saved records…</p>}
+          {saving && <p role="status">Saving…</p>}
           {page === "Dashboard" && (
             <>
               <section className="stats-grid" aria-label="Financial summary">
@@ -1106,7 +1105,8 @@ export default function App() {
                   key={demoData ? "demo" : "personal"}
                   onSubmit={(e) => {
                     e.preventDefault();
-                    const f = new FormData(e.currentTarget);
+                    const form=e.currentTarget;
+    const f = new FormData(form);
                     commit(
                       {
                         ...data,
@@ -1145,16 +1145,14 @@ export default function App() {
                   <button className="primary">Save profile</button>
                 </form>
                 <div className="tip">
-                  Phase 1 uses INR throughout. Your profile is stored only in
-                  this browser; this is not an authenticated account.
+                  Paisa uses INR throughout. Your profile is stored in the local database; this is not an authenticated account.
                 </div>
               </section>
               <div className="settings-stack">
                 <section className="panel form-panel">
                   <h2>Your data, in your hands</h2>
                   <p className="muted">
-                    Records are saved in this browser on this device. Clearing
-                    browser data removes them. Export a backup regularly.
+                    Records are saved in a SQLite database on your computer. Keep JSON backups before replacing or resetting records.
                   </p>
                   <button
                     className="secondary full"
@@ -1198,24 +1196,18 @@ export default function App() {
                       }}
                     />
                   </label>
-                  {storageError && (
-                    <button
-                      className="secondary full"
-                      onClick={() => {
-                        try {
-                          download(
-                            "paisa-unreadable-backup.txt",
-                            localStorage.getItem(KEY) || "",
-                            "text/plain",
-                          );
-                        } catch {
-                          setError("Browser storage is unavailable.");
-                        }
-                      }}
-                    >
-                      Download unreadable stored data
-                    </button>
-                  )}
+                  <button className="secondary full" onClick={() => {
+                    try {
+                      const raw=localStorage.getItem(KEY);
+                      if (!raw) throw Error("No earlier browser records were found here. You can restore a JSON backup instead.");
+                      const imported=validateData(JSON.parse(raw));
+                      ask("Import earlier browser records?", "This replaces the current database workspace. Export a backup first. Your original browser copy will be kept.",()=>commit(imported,"Browser records imported."));
+                    } catch { setError("Browser records are missing or unreadable. The original copy has not been changed."); }
+                  }}>Import earlier browser records</button>
+                  <button className="secondary full" onClick={() => {
+                    try { const raw=localStorage.getItem(KEY); if(!raw) throw Error(); download("paisa-browser-backup.txt",raw,"text/plain"); }
+                    catch { setError("No accessible browser backup was found."); }
+                  }}>Download original browser backup</button>
                 </section>
                 <section className="panel form-panel">
                   <h2>Explore with demo data</h2>
@@ -1242,24 +1234,7 @@ export default function App() {
                       ask(
                         "Reset this workspace?",
                         `This removes all ${demoData ? "demo" : "personal"} data. This cannot be undone without a backup.`,
-                        () => {
-                          try {
-                            if (demoData) {
-                              setDemoData(fresh());
-                            } else {
-                              localStorage.setItem(
-                                KEY,
-                                JSON.stringify(fresh()),
-                              );
-                              setPersonal(fresh());
-                              setStorageError("");
-                            }
-                            setNotice("Workspace reset.");
-                            setError("");
-                          } catch {
-                            setError("Could not reset browser storage.");
-                          }
-                        },
+                        () => commit(fresh(), "Workspace reset."),
                       )
                     }
                   >
@@ -1274,7 +1249,7 @@ export default function App() {
               paisa.{" "}
               <span className="muted">A clearer view of your money.</span>
             </span>
-            <span>Phase 1 · Local-first · INR</span>
+            <span>Phase 2 · SQLite · INR</span>
           </footer>
         </main>
       </div>
@@ -1312,5 +1287,6 @@ export default function App() {
         </div>
       </dialog>
     </div>
+    </fieldset>
   );
 }
