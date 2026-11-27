@@ -236,7 +236,7 @@ export function TransactionForm({
         <div className="aside-line" />
         <small>YOUR RECORDS STAY YOURS</small>
         <p>
-          Saved locally in your browser. Export a backup from Settings whenever
+          Saved in your local database. Export a backup from Settings whenever
           you need one.
         </p>
       </aside>

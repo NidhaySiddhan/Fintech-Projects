@@ -3,8 +3,17 @@ import assert from "node:assert/strict";
 import { JSDOM } from "jsdom";
 import { build } from "esbuild";
 import { unlink } from "node:fs/promises";
+import { openStore } from "../server/database.mjs";
 
 test("shared-data UI: transactions, budgets, categories, profile, demo, and persistence", async () => {
+  const store=openStore(':memory:');
+  const originalFetch=globalThis.fetch;
+  let failSave=false;
+  globalThis.fetch=async (_url,options={})=>{
+    if(failSave && options.method==='PUT') return new Response(JSON.stringify({error:"Server unavailable; retry."}),{status:503});
+    try {const result=options.method==='PUT' ? store.save(JSON.parse(options.body).data,JSON.parse(options.body).revision) : store.read();return new Response(JSON.stringify(result),{status:200});}
+    catch(e) {return new Response(JSON.stringify({error:e.message}),{status:409});}
+  };
   const dom = new JSDOM(
     '<!doctype html><html><body><div id="root"></div></body></html>',
     { url: "http://localhost", pretendToBeVisual: true },
@@ -80,7 +89,7 @@ test("shared-data UI: transactions, budgets, categories, profile, demo, and pers
     });
   };
   const text = () => document.body.textContent;
-  const state = () => JSON.parse(localStorage.getItem("paisa-personal-v1"));
+  const state = () => store.read().data;
   const submit = async (label) => click(label);
   async function add(title, amount, income = false) {
     await nav("Add Transaction");
@@ -137,6 +146,25 @@ test("shared-data UI: transactions, budgets, categories, profile, demo, and pers
   await input("email", "test@example.com");
   await submit("Save profile");
   assert.equal(state().profile.name, "Test Person");
+  // Failed saves must retain persisted records and let the user retry.
+  failSave=true;
+  await input("name","Unsaved name");
+  await submit("Save profile");
+  assert.equal(state().profile.name,"Test Person");
+  assert.ok(text().includes("Server unavailable"));
+  failSave=false;
+  await submit("Save profile");
+  assert.equal(state().profile.name,"Unsaved name");
+  // Simulate another tab writing after this UI loaded its revision.
+  const external=store.read();external.data.profile.name="Other tab";
+  store.save(external.data,external.revision);
+  await input("name","Stale overwrite");
+  await submit("Save profile");
+  assert.equal(state().profile.name,"Other tab");
+  assert.ok(text().includes("Another tab"));
+  await click("Reload saved data");
+  await input("name","Test Person");
+  await submit("Save profile");
   const before = JSON.stringify(state());
   await click("Try demo mode");
   await nav("Transactions");
@@ -169,11 +197,20 @@ test("shared-data UI: transactions, budgets, categories, profile, demo, and pers
   await click("Reset personal data");
   await click("Confirm");
   assert.equal(state().transactions.length, 0);
+  const legacy=store.read().data;legacy.profile.name="Legacy import";
+  const legacyRaw=JSON.stringify(legacy);localStorage.setItem("paisa-personal-v1",legacyRaw);
+  await click("Import earlier browser records");
+  await click("Cancel");assert.equal(state().profile.name,"");
+  await click("Import earlier browser records");await click("Confirm");
+  assert.equal(state().profile.name,"Legacy import");
+  assert.equal(localStorage.getItem("paisa-personal-v1"),legacyRaw);
   await act(async () => root.unmount());
   localStorage.setItem("paisa-personal-v1", "broken json");
   root = createRoot(document.getElementById("root"));
   await act(async () => root.render(React.createElement(App)));
-  assert.ok(text().includes("could not be read"));
+  await nav("Settings");
+  await click("Import earlier browser records");
+  assert.ok(text().includes("missing or unreadable"));
   assert.equal(
     localStorage.getItem("paisa-personal-v1"),
     "broken json",
@@ -182,4 +219,6 @@ test("shared-data UI: transactions, budgets, categories, profile, demo, and pers
   await act(async () => root.unmount());
   await unlink("tests/.ui-app.cjs");
   dom.window.close();
+  globalThis.fetch=originalFetch;
+  store.close();
 });
